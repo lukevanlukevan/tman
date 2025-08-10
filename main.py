@@ -157,9 +157,9 @@ def main(stdscr, config_path):
         key = stdscr.getch()
         
         # Navigation
-        if key == curses.KEY_UP and selected_row > 0:
+        if (key == curses.KEY_UP or key == ord('k')) and selected_row > 0:
             selected_row -= 1
-        elif key == curses.KEY_DOWN and selected_row < len(items) - 1:
+        elif (key == curses.KEY_DOWN or key == ord('j')) and selected_row < len(items) - 1:
             selected_row += 1
         elif key in [ord('\n'), ord('s')] and items:  # Enter or 's' to start
             output = do_start(items[selected_row])
