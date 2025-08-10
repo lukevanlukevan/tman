@@ -3,7 +3,7 @@ items:
     directory: /Users/lukevan/Code/fieldwork-web
     command: yarn dev
   - name: gmt
-    directory: /Users/lukevan/Code/gm-tracker
+    directory: /Users/lukevan/code/gm-tracker
     command: uv run main.py
   - name: spanish
     directory: /Users/lukevan/Code/spanish-bot

@@ -19,11 +19,11 @@ def run_command(command):
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
         return result.stdout, result.stderr
     except subprocess.SubprocessError as e:
-        return "", f"Error running command: {e}"
+        return "", f"Error running command: {str(e)}"
 
 def get_tmux_output(name):
     """Capture the output of a tmux session."""
-    check_cmd = f'tmux has-session -t "{name}"'
+    check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
     result = subprocess.run(check_cmd, shell=True, capture_output=True)
     if result.returncode != 0:
         return "No active session."
@@ -31,7 +31,7 @@ def get_tmux_output(name):
     capture_cmd = f'tmux capture-pane -t "{name}" -p'
     stdout, stderr = run_command(capture_cmd)
     if stderr:
-        return f"Error capturing output: {stderr}"
+        return f"Error capturing output: stdout='{stdout}', stderr='{stderr}'"
     return stdout or "No output available."
 
 def do_start(item):
@@ -39,76 +39,99 @@ def do_start(item):
     command = item.get("command", "")
     directory = item.get("directory", None)
     
+    if not command:
+        return "No command specified."
+    
     if directory:
         exec_cmd = f'cd "{directory}" && {command}'
     else:
         exec_cmd = command
     
-    check_cmd = f'tmux has-session -t "{name}"'
+    # Source shell profile and keep session alive with exec zsh
+    exec_cmd = f'source ~/.zshrc && {exec_cmd}; exec zsh'
+    
+    check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
     result = subprocess.run(check_cmd, shell=True, capture_output=True)
     
     if result.returncode == 0:
         return "Session already exists."
-    else:
-        start_cmd = f'tmux new-session -d -s "{name}" "{exec_cmd}"'
-        stdout, stderr = run_command(start_cmd)
-        if stderr:
-            return stderr
-        else:
-            return "Session started successfully."
+    
+    # Use zsh -c for compatibility with user's shell
+    start_cmd = f'tmux new-session -d -s "{name}" "zsh -c \'{exec_cmd}\'"'
+    stdout, stderr = run_command(start_cmd)
+    if stderr or stdout:
+        return f"Start session: stdout='{stdout}', stderr='{stderr}'"
+    
+    # Check if session was created
+    result = subprocess.run(check_cmd, shell=True, capture_output=True)
+    if result.returncode != 0:
+        return f"Failed to create session: stdout='{stdout}', stderr='{stderr}'"
+    
+    time.sleep(0.5)  # Brief delay to allow command to produce output
+    return "Session started successfully."
 
 def do_restart(item):
     name = item.get("name", "Unnamed")
     command = item.get("command", "")
     directory = item.get("directory", None)
     
+    if not command:
+        return "No command specified."
+    
     if directory:
         exec_cmd = f'cd "{directory}" && {command}'
     else:
         exec_cmd = command
     
-    kill_cmd = f'tmux kill-session -t "{name}"'
-    run_command(kill_cmd)  # Ignore output, proceeds even if session doesn't exist
+    # Source shell profile and keep session alive with exec zsh
+    exec_cmd = f'source ~/.zshrc && {exec_cmd}; exec zsh'
     
-    start_cmd = f'tmux new-session -d -s "{name}" "{exec_cmd}"'
+    kill_cmd = f'tmux kill-session -t "{name}" 2>/dev/null'
+    run_command(kill_cmd)
+    
+    # Use zsh -c for compatibility
+    start_cmd = f'tmux new-session -d -s "{name}" "zsh -c \'{exec_cmd}\'"'
     stdout, stderr = run_command(start_cmd)
-    if stderr:
-        return stderr
-    else:
-        return "Session restarted successfully."
+    if stderr or stdout:
+        return f"Restart session: stdout='{stdout}', stderr='{stderr}'"
+    
+    # Check if session was created
+    check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
+    result = subprocess.run(check_cmd, shell=True, capture_output=True)
+    if result.returncode != 0:
+        return f"Failed to restart session: stdout='{stdout}', stderr='{stderr}'"
+    
+    time.sleep(0.5)  # Brief delay to allow command to produce output
+    return "Session restarted successfully."
 
 def do_close(item):
     name = item.get("name", "Unnamed")
-    kill_cmd = f'tmux kill-session -t "{name}"'
+    kill_cmd = f'tmux kill-session -t "{name}" 2>/dev/null'
     stdout, stderr = run_command(kill_cmd)
     if "can't find session" in stderr:
         return "Session does not exist."
-    elif stderr:
-        return stderr
-    else:
-        return "Session closed successfully."
+    elif stderr or stdout:
+        return f"Close session: stdout='{stdout}', stderr='{stderr}'"
+    return "Session closed successfully."
 
 def do_open(item):
     name = item.get("name", "Unnamed")
-    check_cmd = f'tmux has-session -t "{name}"'
+    check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
     result = subprocess.run(check_cmd, shell=True, capture_output=True)
     
     if result.returncode != 0:
         return "Session does not exist."
     
-    # Attach to the tmux session and exit the curses app
     os.system(f'tmux attach-session -t "{name}"')
     return "Attaching to session..."
 
 def draw_menu(stdscr, items, selected_row, output, tmux_output):
-    stdscr.clear()
+    stdscr.erase()
     h, w = stdscr.getmaxyx()
     
-    # Draw border for the item list (left panel)
     stdscr.box()
     stdscr.addstr(0, 2, " Commands ")
     
-    # Draw items in the left panel
     left_width = w // 3
     for idx, item in enumerate(items):
         name = item.get("name", "Unnamed")
@@ -119,61 +142,77 @@ def draw_menu(stdscr, items, selected_row, output, tmux_output):
         else:
             stdscr.addstr(idx + 1, 1, name[:left_width-2])
     
-    # Draw output in the right panel
     stdscr.addstr(0, left_width + 1, " Output ")
     stdscr.vline(1, left_width, curses.ACS_VLINE, h-2)
     
-    # Prioritize tmux_output if available, otherwise show action output
     display_output = tmux_output if tmux_output else output
     if display_output:
         lines = display_output.split('\n')
-        for i, line in enumerate(lines[:h-3]):  # Adjusted for hotkey bar
+        for i, line in enumerate(lines[:h-3]):
             stdscr.addstr(i + 1, left_width + 2, line[:w-left_width-3])
     
-    # Draw hotkey bar at the bottom
     hotkey_bar = " [s] Start  [r] Restart  [c] Close  [o] Open  [q] Quit "
     stdscr.addstr(h-1, 0, hotkey_bar[:w-1].center(w-1), curses.A_REVERSE)
     
     stdscr.refresh()
 
 def main(stdscr, config_path):
-    curses.curs_set(0)  # Hide cursor
+    curses.curs_set(0)
     items = load_config(config_path).get("items", [])
     selected_row = 0
-    output = ""  # For action status messages
+    output = ""
     last_selected = None
-    tmux_output = ""  # For tmux session output
+    tmux_output = ""
+    last_tmux_output = ""
     
     while True:
-        # Fetch tmux output only when selection changes or after an action
         if items and (selected_row != last_selected or output):
-            tmux_output = get_tmux_output(items[selected_row].get("name", "Unnamed"))
-            last_selected = selected_row
-            if output:  # Clear action output after displaying once
+            new_tmux_output = get_tmux_output(items[selected_row].get("name", "Unnamed"))
+            if new_tmux_output != last_tmux_output or output or selected_row != last_selected:
+                tmux_output = new_tmux_output
+                last_tmux_output = tmux_output
+                last_selected = selected_row
+                draw_menu(stdscr, items, selected_row, output, tmux_output)
+            if output:
                 output = ""
+        elif items:
+            new_tmux_output = get_tmux_output(items[selected_row].get("name", "Unnamed"))
+            if new_tmux_output != last_tmux_output:
+                tmux_output = new_tmux_output
+                last_tmux_output = tmux_output
+                draw_menu(stdscr, items, selected_row, output, tmux_output)
         
-        draw_menu(stdscr, items, selected_row, output, tmux_output)
-        stdscr.timeout(1000)  # Refresh every second to update tmux output
-        key = stdscr.getch()
+        stdscr.timeout(1000)
+        try:
+            key = stdscr.getch()
+        except curses.error:
+            key = -1
         
-        # Navigation
         if (key == curses.KEY_UP or key == ord('k')) and selected_row > 0:
             selected_row -= 1
+            draw_menu(stdscr, items, selected_row, output, tmux_output)
         elif (key == curses.KEY_DOWN or key == ord('j')) and selected_row < len(items) - 1:
             selected_row += 1
-        elif key in [ord('\n'), ord('s')] and items:  # Enter or 's' to start
+            draw_menu(stdscr, items, selected_row, output, tmux_output)
+        elif key in [ord('\n'), ord('s')] and items:
             output = do_start(items[selected_row])
             tmux_output = get_tmux_output(items[selected_row].get("name", "Unnamed"))
-        elif key == ord('r') and items:  # Restart
+            last_tmux_output = tmux_output
+            draw_menu(stdscr, items, selected_row, output, tmux_output)
+        elif key == ord('r') and items:
             output = do_restart(items[selected_row])
             tmux_output = get_tmux_output(items[selected_row].get("name", "Unnamed"))
-        elif key == ord('c') and items:  # Close
+            last_tmux_output = tmux_output
+            draw_menu(stdscr, items, selected_row, output, tmux_output)
+        elif key == ord('c') and items:
             output = do_close(items[selected_row])
             tmux_output = "No active session."
-        elif key == ord('o') and items:  # Open (attach to tmux session)
+            last_tmux_output = tmux_output
+            draw_menu(stdscr, items, selected_row, output, tmux_output)
+        elif key == ord('o') and items:
             output = do_open(items[selected_row])
-            break  # Exit curses after attaching
-        elif key == ord('q'):  # Quit
+            break
+        elif key == ord('q'):
             break
 
 if __name__ == "__main__":
