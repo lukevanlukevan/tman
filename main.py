@@ -4,6 +4,7 @@ import subprocess
 import argparse
 import os
 import time
+import re
 
 def load_config(config_path):
     try:
@@ -22,13 +23,13 @@ def run_command(command):
         return "", f"Error running command: {str(e)}"
 
 def get_tmux_output(name):
-    """Capture the output of a tmux session."""
+    """Capture the output of a tmux session with ANSI color codes."""
     check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
     result = subprocess.run(check_cmd, shell=True, capture_output=True)
     if result.returncode != 0:
         return "No active session."
     
-    capture_cmd = f'tmux capture-pane -t "{name}" -p'
+    capture_cmd = f'tmux capture-pane -e -p -t "{name}"'
     stdout, stderr = run_command(capture_cmd)
     if stderr:
         return f"Error capturing output: stdout='{stdout}', stderr='{stderr}'"
@@ -47,7 +48,6 @@ def do_start(item):
     else:
         exec_cmd = command
     
-    # Source shell profile and keep session alive with exec zsh
     exec_cmd = f'source ~/.zshrc && {exec_cmd}; exec zsh'
     
     check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
@@ -56,18 +56,16 @@ def do_start(item):
     if result.returncode == 0:
         return "Session already exists."
     
-    # Use zsh -c for compatibility with user's shell
     start_cmd = f'tmux new-session -d -s "{name}" "zsh -c \'{exec_cmd}\'"'
     stdout, stderr = run_command(start_cmd)
     if stderr or stdout:
         return f"Start session: stdout='{stdout}', stderr='{stderr}'"
     
-    # Check if session was created
     result = subprocess.run(check_cmd, shell=True, capture_output=True)
     if result.returncode != 0:
         return f"Failed to create session: stdout='{stdout}', stderr='{stderr}'"
     
-    time.sleep(0.5)  # Brief delay to allow command to produce output
+    time.sleep(0.5)
     return "Session started successfully."
 
 def do_restart(item):
@@ -83,25 +81,22 @@ def do_restart(item):
     else:
         exec_cmd = command
     
-    # Source shell profile and keep session alive with exec zsh
     exec_cmd = f'source ~/.zshrc && {exec_cmd}; exec zsh'
     
     kill_cmd = f'tmux kill-session -t "{name}" 2>/dev/null'
     run_command(kill_cmd)
     
-    # Use zsh -c for compatibility
     start_cmd = f'tmux new-session -d -s "{name}" "zsh -c \'{exec_cmd}\'"'
     stdout, stderr = run_command(start_cmd)
     if stderr or stdout:
         return f"Restart session: stdout='{stdout}', stderr='{stderr}'"
     
-    # Check if session was created
     check_cmd = f'tmux has-session -t "{name}" 2>/dev/null'
     result = subprocess.run(check_cmd, shell=True, capture_output=True)
     if result.returncode != 0:
         return f"Failed to restart session: stdout='{stdout}', stderr='{stderr}'"
     
-    time.sleep(0.5)  # Brief delay to allow command to produce output
+    time.sleep(0.5)
     return "Session restarted successfully."
 
 def do_close(item):
@@ -124,6 +119,43 @@ def do_open(item):
     
     os.system(f'tmux attach-session -t "{name}"')
     return "Attaching to session..."
+
+def init_colors():
+    """Initialize curses color pairs for ANSI color codes."""
+    curses.start_color()
+    curses.use_default_colors()
+    
+    # Map ANSI color codes to curses color pairs
+    # ANSI: 30=black, 31=red, 32=green, 33=yellow, 34=blue, 35=magenta, 36=cyan, 37=white
+    for i, color in enumerate([
+        curses.COLOR_BLACK, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_YELLOW,
+        curses.COLOR_BLUE, curses.COLOR_MAGENTA, curses.COLOR_CYAN, curses.COLOR_WHITE
+    ], 1):
+        curses.init_pair(i, color, -1)  # Foreground color, default background
+    curses.init_pair(9, -1, -1)  # Default color (no ANSI code)
+
+def parse_ansi(text):
+    """Parse ANSI escape codes and yield (text, color_pair) tuples."""
+    ansi_pattern = re.compile(r'\x1b\[([0-9;]*)m')
+    parts = ansi_pattern.split(text)
+    current_pair = 9  # Default color pair
+    i = 0
+    
+    while i < len(parts):
+        if i % 2 == 0:
+            if parts[i]:
+                yield parts[i], current_pair
+        else:
+            codes = parts[i].split(';')
+            if not codes or codes == ['']:
+                current_pair = 9  # Reset to default
+            else:
+                for code in codes:
+                    if code in ['30', '31', '32', '33', '34', '35', '36', '37']:
+                        current_pair = int(code) - 29  # Map 30->1, 31->2, etc.
+                    elif code == '0':
+                        current_pair = 9  # Reset
+        i += 1
 
 def draw_menu(stdscr, items, selected_row, output, tmux_output):
     stdscr.erase()
@@ -149,7 +181,19 @@ def draw_menu(stdscr, items, selected_row, output, tmux_output):
     if display_output:
         lines = display_output.split('\n')
         for i, line in enumerate(lines[:h-3]):
-            stdscr.addstr(i + 1, left_width + 2, line[:w-left_width-3])
+            if i >= h - 3:
+                break
+            x = left_width + 2
+            for text, color_pair in parse_ansi(line):
+                if x >= w - 1:
+                    break
+                display_text = text[:w - x - 1]
+                if display_text:
+                    try:
+                        stdscr.addstr(i + 1, x, display_text, curses.color_pair(color_pair))
+                    except curses.error:
+                        pass  # Ignore errors from writing outside window
+                    x += len(display_text)
     
     hotkey_bar = " [s] Start  [r] Restart  [c] Close  [o] Open  [q] Quit "
     stdscr.addstr(h-1, 0, hotkey_bar[:w-1].center(w-1), curses.A_REVERSE)
@@ -157,6 +201,7 @@ def draw_menu(stdscr, items, selected_row, output, tmux_output):
     stdscr.refresh()
 
 def main(stdscr, config_path):
+    init_colors()
     curses.curs_set(0)
     items = load_config(config_path).get("items", [])
     selected_row = 0
