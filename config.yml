@@ -1,0 +1,8 @@
+items:
+  - name: gomo
+    directory: /Users/lukevan/Code/fieldwork-web
+    command: yarn dev
+  - name: Check Disk Space
+    command: df -h
+  - name: Ping Google
+    command: ping -c 4 google.com
